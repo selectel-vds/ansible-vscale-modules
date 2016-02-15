@@ -1,0 +1,462 @@
+#!/usr/bin/python
+#
+# (c) 2015, Vscale Team <hello@vscale.io>
+#
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+DOCUMENTATION = '''
+---
+module: vscale_scalets
+short_description: vscale.io scalets management
+description:
+    - Creates scalets.
+    - Deletes scalets
+    - Rebuild, upgrades scalets
+    - Provides scalets power management
+    - Collects ansible facts after creation of scalet
+version_added: "2.1"
+author: Sergey Krasnopivets (@skrasnopivets)
+options:
+  token:
+    description:
+     - Vscale API token.
+    required: true
+  state:
+    description:
+     - Indicate desired state of scalet.
+    required: true
+    default: present
+    choices: ['present', 'absent']
+  name:
+    description:
+     - Name of scalet. Must be unique.
+     required: true
+  key_name:
+    description:
+     - Name of SSH key (optional).
+  password:
+    description:
+     - Password for new scalet (optional).
+  power_state:
+    description:
+     - Power state of scalet.
+     default: started
+     choices: ['started', 'stopped', 'restarted']
+  rebuild:
+    description: 
+     - Reinstall scalet.
+    default: no
+    choices: ['yes', 'no']
+  upgrade:
+    description:
+     - Upgrade scalet billing plan.
+    default: no
+  choices: ['yes', 'no']
+  image:
+    description:
+     - Scalet template name. Necessary for creating and upgrading scalet.
+  plan:
+    description:
+     - Billing plan of scalet
+  location:
+    description:
+     - Region ID for create scalet
+  collect_facts:
+    description:
+     - If you want to get ansible facts after creation of scalet, set this option to yes
+    default: no
+    choices: ['yes', 'no']
+requirements:
+  - python-requests
+notes:
+  - To create a scalet, you can specify either key or password
+  - Several keys can be added to public_key_name as key_name1, key_name2 (see examples)
+  - API token  may be get from OS enviroment named VS_API_KEY
+'''
+
+EXAMPLES = '''
+# Create a new scalet with SSH key and collect facts after creation
+- vscale_scalets: >
+      token=XXX
+      name=Test_scalet
+      plan=small
+      location=spb0
+      image=ubuntu_14.04_64_002_master
+      key_name=key_name1, key_name2
+      collect_facts=yes
+      state=present
+# Create a new scalet with password
+- vscale_scalets: >
+      token=XXX
+      name=Test_scalet
+      plan=small
+      location=spb0
+      image=ubuntu_14.04_64_002_master
+      password=123456789
+      state=present
+# Upgrade scalet's billing plan
+- vscale_scalets: >
+      token=XXX
+      name=Test_scalet
+      plan=huge
+      upgrade=yes
+      state=present
+# Restart scalet
+- vscale_scalets: >
+      token=XXX
+      name=Test_scalet
+      power_state=restarted
+      state=present
+# Rebuild scalet
+- vscale_scalets: >
+      token=XXX
+      name=Test_scalet
+      rebuild=yes
+      state=present
+'''
+
+import requests
+import json
+from time import sleep
+import time
+import os
+
+class VscaleAPIException(Exception):
+    pass
+
+
+class VscaleAPI:
+
+    def __init__(self, token, **kwargs):
+
+        if not token:
+            raise VscaleAPIException("No token")
+
+        self.token = token
+
+        # Initialize default values
+        if 'version' in kwargs:
+            self.version = kwargs['version']
+        else:
+            self.version = 1
+
+        if 'url' in kwargs:
+            self.url = kwargs['url']
+        else:
+            self.url = 'https://api.vscale.io/v%s' % self.version
+
+        if 'blocking' in kwargs:
+            self.blocking = kwargs['blocking']
+        else:
+            self.blocking = True
+
+        if 'timeout' in kwargs:
+            self.timeout = kwargs['timeout']
+        else:
+            self.timeout = 300
+
+        if 'poll_interval' in kwargs:
+            self.poll_interval = kwargs['poll_interval']
+        else:
+            self.poll_interval = 5
+
+        if 'dry_run' in kwargs:
+            self.dry_run = kwargs['dry_run']
+        else:
+            self.dry_run = False
+
+
+    def _rq(self, method, path, payload=None):
+        headers = {
+            'X-Token': self.token,
+            'Content-Type': 'application/json;charset=utf-8'
+        }
+
+        rq_url = self.url + path
+
+        if self.dry_run and method != 'GET':
+            return {}
+
+        if method == 'GET':
+            rq = requests.get(rq_url, headers=headers)
+        elif method == 'POST':
+            rq = requests.post(
+                rq_url, headers=headers, data=json.dumps(payload))
+        elif method == 'PUT':
+            rq = requests.put(
+                rq_url, headers=headers, data=json.dumps(payload))
+        elif method == 'PATCH':
+            rq = requests.patch(
+                rq_url, headers=headers, data=json.dumps(payload))
+        elif method == 'DELETE':
+            rq = requests.delete(
+                rq_url, headers=headers, data=json.dumps(payload))
+        else:
+            raise VscaleAPIException('Unknown method "%s"' % method)
+
+        if rq.status_code < 200 or rq.status_code > 299:
+            backend_error = rq.headers[
+                'Vscale-Error-Message'] if 'Vscale-Error-Message' in rq.headers else 'Unknown error'
+            raise VscaleAPIException(
+                '%s request to %s failed: %s' % (method, path, backend_error))
+
+        # Wait for task to complete if we're blocking and have task ID
+        task_id = rq.headers[
+            'Vscale-Task-Id'] if 'Vscale-Task-Id' in rq.headers else None
+        if task_id and self.blocking:
+            self.task_waitcomplete(task_id)
+
+        return rq.json()
+
+    def task_waitcomplete(self, task_id):
+        start_time = time.time()
+        while time.time() < (start_time + self.timeout):
+            task = self.task_get(task_id)
+            if task['done']:
+                break
+            sleep(self.poll_interval)
+
+        if not task['done']:
+            raise VscaleAPIException("Task timeout %s" % task['id'])
+
+        if task['error']:
+            raise VscaleAPIException("Task failed %s" % task['id'])
+
+    ##### Task ops #####
+    def task_list(self):
+        return self._rq('GET', '/tasks')
+
+    def task_get(self, uuid):
+        return self._rq('GET', '/tasks/%s' % uuid)
+    ##### Scalet ops #####
+
+    def scalet_create(self, name, template_name, rplan_name, location_name, password=None, key_ids=[], do_start=True):
+        payload = {
+            "name":         name,
+            "location":     location_name,
+            "make_from":    template_name,
+            "rplan":        rplan_name,
+            "do_start":     do_start,
+            "keys":         key_ids
+        }
+
+        if password:
+            payload['password'] = password
+
+        return self._rq('POST', '/scalets', payload)
+
+    def scalet_list(self):
+        return self._rq('GET', '/scalets')
+
+    def scalet_get(self, ctid):
+        return self._rq('GET', '/scalets/%s' % ctid)
+
+    def scalet_find_by_name(self, name):
+        scalets = self.scalet_list()
+        for scalet in scalets:
+            if scalet['name'] == name:
+                return scalet
+
+    def scalet_delete(self, ctid):
+        self._rq('DELETE', '/scalets/%s' % ctid)
+
+    def scalet_rebuild(self, ctid, password=None):
+        if password:
+            self._rq('PATCH', '/scalets/%s/rebuild' %
+                     ctid, payload={"password": password})
+        else:
+            self._rq('PATCH', '/scalets/%s/rebuild' %
+                     ctid, payload={"password": ""})
+
+    def scalet_restart(self, ctid):
+        self._rq('PATCH', '/scalets/%s/restart' % ctid)
+
+    def scalet_start(self, ctid):
+        self._rq('PATCH', '/scalets/%s/start' % ctid)
+
+    def scalet_stop(self, ctid):
+        self._rq('PATCH', '/scalets/%s/stop' % ctid)
+
+    def scalet_add_sshkeys(self, ctid, key_ids):
+        self._rq('PATCH', '/scalets/%s' % ctid, payload={"keys": key_ids})
+
+    def scalet_add_sshkey(self, ctid, key_id):
+        self.scalet_add_sshkeys(ctid, [key_id])
+
+    def scalet_upgrade(self, ctid, rplan_name):
+        self._rq('POST', '/scalets/%s/upgrade' %
+                 ctid, payload={"rplan": rplan_name})
+
+    def sshkey_list(self):
+        return self._rq('GET', '/sshkeys')
+
+def ssh_keyids_by_names(vscale, key_names):
+    for k in vscale.sshkey_list():
+        if k['name'] in key_names:
+            yield k['id']
+
+def main():
+    module = AnsibleModule(
+        argument_spec=dict(
+            name=dict(type='str'),
+            key_name=dict(type='list'),
+            password=dict(type='str'),
+            state=dict(choices=['present', 'absent'], default='present'),
+            power_state=dict(choices=['started', 'stopped', 'restarted']),
+            rebuild=dict(type='bool', default=False),
+            upgrade=dict(type='bool', default=False),
+            token=dict(type='str', aliases=['VS_API_KEY']),
+            image=dict(type='str'),
+            plan=dict(type='str'),
+            location=dict(type='str'),
+            collect_facts=dict(type='bool', default=False)
+        ),
+        required_one_of=(
+            ['name'],),
+        supports_check_mode=False
+    )
+
+    # Just in case
+    if not module.params['name'] or module.params['name'].strip() == '':
+        module.exit_json(changed=False, msg="No/empty scalet name provided")
+
+    # Initialize VscaleAPI
+    token = module.params['token'] if module.params['token'] else os.environ['VS_API_KEY'] if 'VS_API_KEY' in os.environ else ''
+    try:
+        vscale = VscaleAPI(token)
+    except VscaleAPIException, e:
+        module.fail_json(changed=False, msg="No token given")
+
+    # Lookup target scalet
+    scalet = vscale.scalet_find_by_name(module.params['name'])
+
+    # First let's settle deletion
+    if module.params['state'] == 'absent':
+        if not scalet:
+            module.exit_json(changed=False, msg="No scalet named '%s'" % module.params['name'])
+        else:
+            try:
+                vscale.scalet_delete(scalet['ctid'])
+                module.exit_json(changed=True, msg="Scalet named '%s' has been deleted" % module.params['name'])
+            except Exception,e:
+                module.fail_json(msg="Failed to delete scalet named '%s': %s" % (module.params['name'], repr(e)))
+
+    changes = []
+    # Below, state can be only 'present'
+    # Check if we need to create new scalet
+    if not scalet:
+        try:
+            if not module.params['key_name'] or module.params['password']: raise KeyError("Neither ssh_key nor password were given")
+            if not module.params['location']: raise KeyError("No location given")
+            if not module.params['image']: raise KeyError("No image given")
+            if not module.params['plan']: raise KeyError("No rate plan given")
+            prescalet = vscale.scalet_create(
+                    module.params['name'],
+                    module.params['image'],
+                    module.params['plan'],
+                    module.params['location'],
+                    module.params['password'],
+                    list(ssh_keyids_by_names(vscale, module.params['key_name'])),
+                    module.params['power_state'] == 'started')
+            scalet = vscale.scalet_get(prescalet['ctid'])
+            changes.append("Scalet '%s' created." % module.params['name'])
+        except Exception,e:
+            module.fail_json(msg="Failed to create scalet '%s': %s" % (module.params['name'], repr(e)))
+    # Check if we want new install
+    elif module.params['rebuild'] and module.params['password']:
+        try:
+          vscale.scalet_rebuild(scalet['ctid'], password=module.params['password'])
+          changes.append("Scalet %s rebuilded with password %s" % (module.params['name'], module.params['password']))
+        except Exception, e:
+          module.fail_json(msg="Failed to rebuild scalet %s with password %s" % (module.params['name'], module.params['password']))
+    elif module.params['rebuild']:
+        try:
+            vscale.scalet_rebuild(scalet['ctid'])
+            changes.append("Scalet '%s' rebuilt." % module.params['name'])
+        except Exception,e:
+            module.fail_json(msg="Failed to rebuild scalet '%s': %s" % (module.params['name'], repr(e)))
+
+    # Below, state can be only 'present', and scalet var is defined
+    # Operations on already present scalet
+    # Check for upgrade
+    if module.params['upgrade']:
+        if scalet['rplan'] != module.params['plan']:
+            try:
+                vscale.scalet_upgrade(scalet['ctid'], module.params['plan'])
+                changes.append("Upgraded scalet to '%s'" % module.params['plan'])
+            except Exception,e:
+                module.fail_json(msg="Failed to upgrade scalet '%s' to '%s': %s" % (module.params['name'], module.params['plan'], repr(e)))
+
+    # Sync ssh keys
+    if module.params['key_name']:
+      got_keys =  set(map(lambda x: x['id'], scalet['keys']))
+      want_keys = set(list(ssh_keyids_by_names(vscale, module.params['key_name'])))
+      keys_to_set = list(want_keys - got_keys)
+      if len(keys_to_set) > 0:
+          try:
+              vscale.scalet_add_sshkeys(scalet['ctid'], keys_to_set)
+              changes.append("Added keys '%s' to scalet '%s'" % (','.join(keys_to_set), module.params['name']))
+          except Exception,e:
+              module.fail_json(msg="Failed to add keys '%s' to scalet '%s': %s" % (','.join(keys_to_set), module.params['name'], repr(e)))
+    else:
+      pass
+
+
+    # Powerstate manipulation
+    if module.params['power_state']:
+        pstate_want = module.params['power_state']
+        pstate = scalet['status']
+        if pstate_want == 'restarted':
+            if pstate == 'started':
+                try:
+                    vscale.scalet_restart(scalet['ctid'])
+                    changes.append("Restarted scalet '%s'" % module.params['name'])
+                except Exception,e:
+                    module.fail_json(msg="Failed to restart scalet '%s': %s" % (module.params['name'], repr(e)))
+            else:
+                pass # Don't restart stopped scalet
+        if pstate_want == 'started':
+            if pstate == 'stopped':
+                try:
+                    vscale.scalet_start(scalet['ctid'])
+                    changes.append("Started scalet '%s'" % module.params['name'])
+                except Exception,e:
+                    module.fail_json(msg="Failed to start scalet '%s': %s" % (module.params['name'], repr(e)))
+            else:
+                pass # No starting required
+        if pstate_want == 'stopped':
+            if pstate == 'started':
+                try:
+                    vscale.scalet_stop(scalet['ctid'])
+                    changes.append("Stopped scalet '%s'" % module.params['name'])
+                except Exception,e:
+                    module.fail_json(msg="Failed to stop scalet '%s': %s" % (module.params['name'], repr(e)))
+            else:
+                pass # No stopping required
+
+
+    facts = {}
+    if module.params['collect_facts']:
+        facts = vscale.scalet_find_by_name(module.params['name'])
+
+    module.exit_json(
+        changed=len(changes)>0,
+        msg="\n".join(changes),
+        scalet=facts)
+
+from ansible.module_utils.basic import *
+if __name__ == '__main__':
+    main()
