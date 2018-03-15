@@ -200,7 +200,7 @@ class VscaleAnsible:
         for key in keys:
             if key['name'] == self.module.params['name']:
                 return key['id']
-                print self.module.params['name']
+                print(self.module.params['name'])
 
     def key_get_facts(self):
 
