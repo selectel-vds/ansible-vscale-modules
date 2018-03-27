@@ -13,17 +13,19 @@ Requirements:
 #### Options for vscale_scalets module:
 Options:
 * token:
-  - Vscale API [token](https://vscale.io/panel/settings/tokens/) 
+  - Vscale API [token](https://vscale.io/panel/settings/tokens/)
 * state:
   - Indicate desired state of scalet.
 * name:
   - Name of scalet. Must be unique.
+* hostname:
+  - Name to set as scalet system hostname. Defaults to None which equals value to "name" variable.
 * key_name:
   - Name of SSH key (optional).
 * password:
   - Password for new scalet (optional).
 * power_state:
-  - Power state of scalet.
+  - Power state of scalet. Default is "started".
 * rebuild:
   - Reinstall scalet.
 * upgrade:
@@ -42,59 +44,59 @@ Options:
 Create a new scalet with SSH key and collect facts after creation:
 
 ```yaml
-- vscale_scalets: >
-    token=XXX
-    name=Test_scalet
-    plan=small
-    location=spb0
-    image=ubuntu_14.04_64_002_master
-    key_name=key_name1, key_name2
-    collect_facts=yes
-    state=present
+- vscale_scalets:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: test_scalet
+    plan: small
+    location: spb0
+    image: ubuntu_16.04_64_001_master
+    key_name: key_name1, key_name2
+    collect_facts: yes
+    state: present
 ```
 
 Create a new scalet with password
 
 ```yaml
-- vscale_scalets: >
-    token=XXX
-    name=Test_scalet
-    plan=small
-    location=spb0
-    image=ubuntu_14.04_64_002_master
-    password=123456789
-    state=present
+- vscale_scalets:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: test_scalet
+    plan: small
+    location: spb0
+    image: ubuntu_16.04_64_001_master
+    password: 123456789
+    state: present
 ```
 
 Upgrade scalet's billing plan
 
 ```yaml
-- vscale_scalets: >
-    token=XXX
-    name=Test_scalet
-    plan=huge
-    upgrade=yes
-    state=present
+- vscale_scalets:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: test_scalet
+    plan: huge
+    upgrade: yes
+    state: present
 ```
 
 Restart scalet
 
 ```yaml
-- vscale_scalets: >
-    token=XXX
-    name=Test_scalet
-    power_state=restarted
-    state=present
+- vscale_scalets:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: test_scalet
+    power_state: restarted
+    state: present
 ```
 
 Rebuild scalet
 
 ```yaml
-- vscale_scalets: >
-    token=XXX
-    name=Test_scalet
-    rebuild=yes
-    state=present
+- vscale_scalets:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: test_scalet
+    rebuild: yes
+    state: present
 ```
 
 #### Options for vscale_ssh module:
@@ -115,26 +117,26 @@ Options:
 Create a new SSH key
 
 ```yaml
-- vscale_ssh: >
-    token=XXX
-    name=key_name
-    public_key=XXX
-    state=present
+- vscale_ssh:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: key_name
+    public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub')}}"
+    state: present
 ```
 Create a new SSH key and gather facts
 
 ```yaml
-- vscale_ssh: >
-    token=XXX
-    name=key_name
-    public_key=XXX
-    state=present
+- vscale_ssh:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: key_name
+    public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub')}}"
+    state: present
 ```
 Delete SSH key from account
 
 ```yaml
-- vscale_ssh: >
-    token=XXX
-    name=key_name
-    state=absent
+- vscale_ssh:
+    token: "{{ lookup('env', 'VS_API_KEY')}}"
+    name: key_name
+    state: absent
 ```
