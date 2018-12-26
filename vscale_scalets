@@ -411,9 +411,9 @@ def main():
       if len(keys_to_set) > 0:
           try:
               vscale.scalet_add_sshkeys(scalet['ctid'], keys_to_set)
-              changes.append("Added keys '%s' to scalet '%s'" % (','.join(keys_to_set), module.params['name']))
+              changes.append("Added keys '%s' to scalet '%s'" % (','.join(map(str, keys_to_set)), module.params['name']))
           except Exception as e:
-              module.fail_json(msg="Failed to add keys '%s' to scalet '%s': %s" % (','.join(keys_to_set), module.params['name'], repr(e)))
+              module.fail_json(msg="Failed to add keys '%s' to scalet '%s': %s" % (','.join(map(str, keys_to_set)), module.params['name'], repr(e)))
     else:
       pass
 
